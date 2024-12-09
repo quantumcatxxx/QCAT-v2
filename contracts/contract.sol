@@ -1,117 +1,231 @@
 // SPDX-License-Identifier: MIT
-// Requirements
-// - 1% tax on each buy/sell but not on the transfer - the tax goes to a specific wallet 
-// - be able to offer staking functionality (15% of tokens will be dedicated to staking incentives) 
-// - transfer initial tokens to few different wallet once contract is deployed (marketing wallet, reserve wallet, LP wallet…) 
-pragma solidity ^0.8.28;
 
-contract TokenWithTaxAndStaking {
+pragma solidity ^0.8.20;
 
-    mapping(address => uint256) private balances;
-    mapping(address => mapping(address => uint256)) private allowances;
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+}
 
-    uint256 public totalSupply;
-    string public name;
-    string public symbol;
-    uint8 public decimals;
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
 
-    address public taxWallet; 
-    uint256 public taxRate = 1;
-    uint256 public stakingPool;
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
 
     event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
-    event TaxCollected(address indexed from, uint256 amount);
-    event TokensStaked(address indexed staker, uint256 amount);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
 
-    constructor(
-        string memory _name,
-        string memory _symbol,
-        uint8 _decimals,
-        uint256 _initialSupply,
-        address _taxWallet,
-        address[] memory initialWallets,
-        uint256[] memory initialAmounts
-    ) {
-        require(initialWallets.length == initialAmounts.length, "Mismatched wallets and amounts");
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
 
-        name = _name;
-        symbol = _symbol;
-        decimals = _decimals;
-        totalSupply = _initialSupply * 10 ** _decimals;
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
 
-        taxWallet = _taxWallet;
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
 
-        uint256 distributed = 0;
-        for (uint256 i = 0; i < initialWallets.length; i++) {
-            balances[initialWallets[i]] = initialAmounts[i] * 10 ** _decimals;
-            distributed += initialAmounts[i] * 10 ** _decimals;
-            emit Transfer(address(0), initialWallets[i], initialAmounts[i] * 10 ** _decimals);
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
         }
-
-        // Dedicate 15% of totalSupply to the staking pool
-        stakingPool = (totalSupply * 15) / 100;
-
-        uint256 remaining = totalSupply - distributed - stakingPool;
-        balances[msg.sender] = remaining;
-        emit Transfer(address(0), msg.sender, remaining);
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
     }
 
-    function balanceOf(address owner) external view returns (uint256) {
-        return balances[owner];
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
     }
 
-    function allowance(address owner, address spender) external view returns (uint256) {
-        return allowances[owner][spender];
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+}
+
+contract Ownable is Context {
+    address private _owner;
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
     }
 
-    function approve(address spender, uint256 value) public returns (bool) {
-        allowances[msg.sender][spender] = value;
-        emit Approval(msg.sender, spender, value);
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+}
+
+contract TheQuantumCat is Context, IERC20, Ownable {
+    using SafeMath for uint256;
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => bool) private _isExcludedFromFee;
+    address payable private ownerAccount;
+
+    uint8 private constant _decimals = 9;
+    uint256 private constant _tTotal = 1000000000 * 10 ** _decimals;
+    string private constant _name = unicode"The Quantum Cat";
+    string private constant _symbol = unicode"QCAT";
+    uint256 public _maxTxAmount = 10000000 * 10 ** _decimals;
+    uint256 public _maxWalletSize = 10000000 * 10 ** _decimals;
+
+    event MaxTxAmountUpdated(uint256 _maxTxAmount);
+
+    constructor() {
+        ownerAccount = payable(msg.sender);
+        _balances[msg.sender] = _tTotal;
+        _isExcludedFromFee[owner()] = true;
+        _isExcludedFromFee[address(this)] = true;
+        _isExcludedFromFee[ownerAccount] = true;
+
+        emit Transfer(address(0), msg.sender, _tTotal);
+    }
+
+    function name() public pure returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public pure returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public pure returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public pure override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
         return true;
     }
 
-    function transfer(address to, uint256 value) external returns (bool) {
-        _transfer(msg.sender, to, value, false);
+    function allowance(
+        address owner,
+        address spender
+    ) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(
+        address spender,
+        uint256 amount
+    ) public override returns (bool) {
+        _approve(_msgSender(), spender, amount);
         return true;
     }
 
-    function transferFrom(address from, address to, uint256 value) public returns (bool) {
-        require(allowances[from][msg.sender] >= value, "Allowance too low");
-        allowances[from][msg.sender] -= value;
-        _transfer(from, to, value, false);
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(
+            sender,
+            _msgSender(),
+            _allowances[sender][_msgSender()].sub(
+                amount,
+                "ERC20: transfer amount exceeds allowance"
+            )
+        );
         return true;
     }
 
-    function buyOrSell(address to, uint256 value) external returns (bool) {
-        _transfer(msg.sender, to, value, true);
-        return true;
+    function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
     }
 
-    function _transfer(address from, address to, uint256 value, bool applyTax) internal {
-        require(balances[from] >= value, "Balance too low");
-        uint256 tax = 0;
-
-        if (applyTax) {
-            tax = (value * taxRate) / 100;
-            balances[taxWallet] += tax;
-            emit TaxCollected(from, tax);
+    function _transfer(address from, address to, uint256 amount) private {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        if (from != owner() && to != owner()) {
+            if (!_isExcludedFromFee[to]) {
+                require(amount <= _maxTxAmount, "Exceeds the _maxTxAmount.");
+                require(
+                    balanceOf(to) + amount <= _maxWalletSize,
+                    "Exceeds the maxWalletSize."
+                );
+            }
         }
-
-        uint256 amountToTransfer = value - tax;
-        balances[from] -= value;
-        balances[to] += amountToTransfer;
-        emit Transfer(from, to, amountToTransfer);
+        _balances[from] = _balances[from].sub(amount);
+        _balances[to] = _balances[to].add(amount);
+        emit Transfer(from, to, amount);
     }
 
-    function stakeTokens(uint256 amount) external {
-        require(amount > 0, "Invalid staking amount");
-        require(balances[msg.sender] >= amount, "Insufficient balance");
-        require(stakingPool >= amount, "Staking pool depleted");
-
-        balances[msg.sender] -= amount;
-        stakingPool -= amount;
-
-        emit TokensStaked(msg.sender, amount);
+    function removeLimit() external onlyOwner {
+        _maxTxAmount = _tTotal;
+        _maxWalletSize = _tTotal;
+        emit MaxTxAmountUpdated(_tTotal);
     }
 }
